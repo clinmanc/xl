@@ -106,8 +106,11 @@ pub fn excel_number_to_date(number: f64, date_system: &DateSystem) -> DateConver
     let seconds = (partial_days * 86400000.0).round() as i64;
     let milliseconds = Duration::milliseconds(seconds % 1000);
     let seconds = Duration::seconds(seconds / 1000);
+    let Some(day_duration) = Duration::try_days(days) else {
+        return DateConversion::Number(days);
+    };
     let Some(date) = base
-        .checked_add_signed(Duration::days(days))
+        .checked_add_signed(day_duration)
         .and_then(|date| date.checked_add_signed(seconds))
         .and_then(|date| date.checked_add_signed(milliseconds))
     else {
@@ -129,7 +132,7 @@ mod tests {
 
     #[test]
     fn preserves_invalid_or_out_of_range_date_serials_as_numbers() {
-        for serial in [60.0, 1_000_000_000.0, f64::INFINITY] {
+        for serial in [60.0, 1_000_000_000.0, 1e20, f64::INFINITY] {
             assert!(matches!(
                 excel_number_to_date(serial, &DateSystem::V1900),
                 DateConversion::Number(_)
