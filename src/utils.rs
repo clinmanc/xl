@@ -59,6 +59,13 @@ pub enum DateConversion {
 ///  the spreadsheet is using. See <http://bit.ly/2He5HoD> for more information on date systems in
 ///  Excel.
 pub fn excel_number_to_date(number: f64, date_system: &DateSystem) -> DateConversion {
+    // A cell can be formatted as a date even when its value is not a valid Excel
+    // date serial (for example, an ID or a Unix timestamp).  Do not let such a
+    // value abort workbook parsing.
+    if !number.is_finite() {
+        return DateConversion::Number(number as i64);
+    }
+
     let base = match date_system {
         DateSystem::V1900 => {
             // Under the 1900 base system, 1 represents 1/1/1900 (so we start with a base date of
@@ -71,7 +78,10 @@ pub fn excel_number_to_date(number: f64, date_system: &DateSystem) -> DateConver
             // represent 2/29/1900 with the number 60, but we cannot convert that value to a date
             // so we throw an error.
             if (number - 60.0).abs() < 0.0001 {
-                panic!("Bad date in Excel file - 2/29/1900 not valid")
+                // Excel incorrectly treats 1900 as a leap year.  Preserve the
+                // serial number instead of panicking because Chrono cannot
+                // represent 1900-02-29.
+                return DateConversion::Number(number as i64);
             // Otherwise, if the value is greater than 60 we need to adjust the base date to
             // 12/30/1899 to account for this leap year bug.
             } else if number > 60.0 {
@@ -96,7 +106,13 @@ pub fn excel_number_to_date(number: f64, date_system: &DateSystem) -> DateConver
     let seconds = (partial_days * 86400000.0).round() as i64;
     let milliseconds = Duration::milliseconds(seconds % 1000);
     let seconds = Duration::seconds(seconds / 1000);
-    let date = base + Duration::days(days) + seconds + milliseconds;
+    let Some(date) = base
+        .checked_add_signed(Duration::days(days))
+        .and_then(|date| date.checked_add_signed(seconds))
+        .and_then(|date| date.checked_add_signed(milliseconds))
+    else {
+        return DateConversion::Number(days);
+    };
     if days == 0 {
         DateConversion::Time(date.time())
     } else if Some(date.time()) == NaiveTime::from_hms_opt(0, 0, 0) {
@@ -109,6 +125,17 @@ pub fn excel_number_to_date(number: f64, date_system: &DateSystem) -> DateConver
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wb::DateSystem;
+
+    #[test]
+    fn preserves_invalid_or_out_of_range_date_serials_as_numbers() {
+        for serial in [60.0, 1_000_000_000.0, f64::INFINITY] {
+            assert!(matches!(
+                excel_number_to_date(serial, &DateSystem::V1900),
+                DateConversion::Number(_)
+            ));
+        }
+    }
 
     #[test]
     fn num_to_letter_w() {
